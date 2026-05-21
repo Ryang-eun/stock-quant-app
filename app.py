@@ -1,14 +1,10 @@
 """
 =============================================================
-  🇰🇷 국내주식 매수 후보 TOP 10 자동 추출기
-  작성자: Ryangeun (quant MVP v1.1)
-  분석 대상: 코스피 / 코스닥 전종목
-  데이터 출처: FinanceDataReader (Python 3.14 완전 호환)
-  변경: pykrx 완전 제거 → FinanceDataReader 단독 사용
+  국내주식 매수 후보 TOP 10 자동 추출기
+  작성자: Ryangeun (quant MVP v1.2)
+  데이터: FinanceDataReader (Python 3.14 호환, API Key 불필요)
+  변경: 전체 컬럼명 영문 통일 → KeyError/AttributeError 완전 제거
 =============================================================
-
-⚠️ 이 도구는 투자 권유가 아닌 후보 추출 도구입니다.
-   모든 투자 결정과 손실에 대한 책임은 투자자 본인에게 있습니다.
 """
 
 import streamlit as st
@@ -19,7 +15,7 @@ import math
 from datetime import datetime, timedelta
 from io import BytesIO
 
-# FinanceDataReader - Python 3.14 완전 호환 (API Key 불필요)
+# FinanceDataReader
 try:
     import FinanceDataReader as fdr
     FDR_AVAILABLE = True
@@ -27,7 +23,7 @@ except ImportError:
     FDR_AVAILABLE = False
 
 # ─────────────────────────────────────────
-#  Streamlit 페이지 기본 설정
+#  페이지 설정
 # ─────────────────────────────────────────
 st.set_page_config(
     page_title="국내주식 매수 후보 TOP 10",
@@ -37,40 +33,40 @@ st.set_page_config(
 )
 
 if not FDR_AVAILABLE:
-    st.error("FinanceDataReader가 설치되지 않았습니다. requirements.txt를 확인하세요.")
+    st.error("FinanceDataReader가 없습니다. requirements.txt를 확인하세요.")
     st.stop()
 
 # ─────────────────────────────────────────
-#  CSS 스타일
+#  CSS
 # ─────────────────────────────────────────
 st.markdown("""
 <style>
-    .main-title {
-        font-size: 2rem; font-weight: 800; color: #1a1a2e;
-        text-align: center; padding: 10px 0;
-    }
-    .sub-title {
-        font-size: 1rem; color: #555; text-align: center; margin-bottom: 20px;
-    }
-    .score-badge {
-        background: linear-gradient(135deg, #667eea, #764ba2);
-        color: white; padding: 4px 10px; border-radius: 12px;
-        font-weight: bold; font-size: 0.85rem;
-    }
-    .info-box {
-        background: #d1ecf1; border-left: 5px solid #17a2b8;
-        padding: 12px 16px; border-radius: 6px; margin: 10px 0;
-        font-size: 0.88rem; color: #0c5460;
-    }
-    .metric-card {
-        background: #f8f9fa; border-radius: 10px; padding: 12px;
-        text-align: center; border: 1px solid #e0e0e0;
-    }
-    .disclaimer {
-        background: #f8d7da; border: 1px solid #f5c6cb;
-        border-radius: 8px; padding: 14px; margin-top: 30px;
-        font-size: 0.82rem; color: #721c24; text-align: center;
-    }
+.main-title {
+    font-size:2rem; font-weight:800; color:#1a1a2e;
+    text-align:center; padding:10px 0;
+}
+.sub-title {
+    font-size:1rem; color:#555; text-align:center; margin-bottom:20px;
+}
+.score-badge {
+    background:linear-gradient(135deg,#667eea,#764ba2);
+    color:white; padding:4px 10px; border-radius:12px;
+    font-weight:bold; font-size:0.85rem;
+}
+.info-box {
+    background:#d1ecf1; border-left:5px solid #17a2b8;
+    padding:12px 16px; border-radius:6px; margin:10px 0;
+    font-size:0.88rem; color:#0c5460;
+}
+.metric-card {
+    background:#f8f9fa; border-radius:10px; padding:12px;
+    text-align:center; border:1px solid #e0e0e0;
+}
+.disclaimer {
+    background:#f8d7da; border:1px solid #f5c6cb;
+    border-radius:8px; padding:14px; margin-top:30px;
+    font-size:0.82rem; color:#721c24; text-align:center;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -80,15 +76,15 @@ st.markdown("""
 # ─────────────────────────────────────────
 
 def get_business_date(offset_days: int = 0) -> str:
-    """오늘 또는 N일 전 영업일 날짜를 YYYYMMDD 형식으로 반환"""
-    date = datetime.today() - timedelta(days=offset_days)
-    while date.weekday() >= 5:
-        date -= timedelta(days=1)
-    return date.strftime("%Y%m%d")
+    """N일 전 영업일을 YYYYMMDD로 반환"""
+    d = datetime.today() - timedelta(days=offset_days)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d.strftime("%Y%m%d")
 
 
 def safe_float(val, default=np.nan):
-    """안전하게 float 변환 (실패 시 default 반환)"""
+    """안전한 float 변환"""
     try:
         v = float(val)
         return v if np.isfinite(v) else default
@@ -96,761 +92,580 @@ def safe_float(val, default=np.nan):
         return default
 
 
-def calculate_rsi(close_series: pd.Series, period: int = 14) -> float:
-    """
-    RSI 직접 계산 (Wilder's Smoothing Method)
-    데이터가 period+1개 미만이면 NaN 반환
-    """
-    if len(close_series) < period + 1:
+def calculate_rsi(prices: pd.Series, period: int = 14) -> float:
+    """RSI 계산 (Wilder's Smoothing)"""
+    if len(prices) < period + 1:
         return np.nan
-
-    delta = close_series.diff().dropna()
-    gain = delta.clip(lower=0)
-    loss = (-delta).clip(lower=0)
-
-    avg_gain = gain.iloc[:period].mean()
-    avg_loss = loss.iloc[:period].mean()
-
+    delta = prices.diff().dropna()
+    gain  = delta.clip(lower=0)
+    loss  = (-delta).clip(lower=0)
+    ag = gain.iloc[:period].mean()
+    al = loss.iloc[:period].mean()
     for i in range(period, len(gain)):
-        avg_gain = (avg_gain * (period - 1) + gain.iloc[i]) / period
-        avg_loss = (avg_loss * (period - 1) + loss.iloc[i]) / period
-
-    if avg_loss == 0:
+        ag = (ag * (period - 1) + gain.iloc[i]) / period
+        al = (al * (period - 1) + loss.iloc[i]) / period
+    if al == 0:
         return 100.0
-
-    rs = avg_gain / avg_loss
-    return round(100 - (100 / (1 + rs)), 2)
+    return round(100 - 100 / (1 + ag / al), 2)
 
 
 def is_etf_etn_spac(name: str) -> bool:
-    """ETF, ETN, SPAC 여부 판단 (종목명 키워드 기반)"""
+    """ETF/ETN/SPAC 여부 (종목명 키워드)"""
     if not isinstance(name, str):
         return False
-    keywords = ["KODEX", "TIGER", "KINDEX", "KOSEF", "ARIRANG", "KBSTAR",
-                "HANARO", "TREX", "SOL", "ACE", "ETN", "스팩", "SPAC",
-                "FOCUS", "SMART", "TIMEFOLIO", "PLUS", "KB스타", "미래에셋"]
-    name_upper = name.upper()
-    return any(kw in name_upper for kw in keywords)
+    keywords = ["KODEX","TIGER","KINDEX","KOSEF","ARIRANG","KBSTAR",
+                "HANARO","TREX","SOL","ACE","ETN","스팩","SPAC",
+                "FOCUS","SMART","TIMEFOLIO","PLUS","WOORI","SAMSUNG"]
+    return any(k in name.upper() for k in keywords)
 
 
-def is_preferred_stock(name: str) -> bool:
-    """우선주 여부 판단 (종목명 끝 suffix 기반)"""
+def is_preferred(name: str) -> bool:
+    """우선주 여부"""
     if not isinstance(name, str):
         return False
-    suffixes = ["우", "우B", "우C", "우D", "1우", "2우", "3우"]
-    return any(name.endswith(s) for s in suffixes)
+    return any(name.endswith(s) for s in ["우","우B","우C","우D","1우","2우","3우"])
 
 
 # ─────────────────────────────────────────
-#  데이터 수집 함수 (FinanceDataReader 기반)
+#  데이터 수집 (모두 영문 컬럼)
 # ─────────────────────────────────────────
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_ticker_list(test_mode: bool, test_limit: int) -> tuple:
     """
-    FinanceDataReader로 코스피 + 코스닥 종목 리스트 수집
-    FDR 컬럼: Code, Name, Sector, Industry, ListingDate 등
-    반환: (DataFrame[티커, 종목명, 시장, PER, PBR, EPS, BPS], errors)
+    FDR StockListing → 영문 컬럼 DataFrame 반환
+    컬럼: ticker, name, market, per, pbr, roe
     """
     records = []
-    errors = []
+    errors  = []
 
-    for market in ["KOSPI", "KOSDAQ"]:
+    for mkt in ["KOSPI", "KOSDAQ"]:
         try:
-            df = fdr.StockListing(market)
+            raw = fdr.StockListing(mkt)
 
-            # FDR 컬럼명이 버전마다 다를 수 있어서 유연하게 처리
-            # 코드 컬럼 찾기
-            code_col = None
-            for c in df.columns:
-                if c.upper() in ["CODE", "SYMBOL", "TICKER"]:
-                    code_col = c
-                    break
-            if code_col is None and len(df.columns) > 0:
-                code_col = df.columns[0]
+            # ── 코드 컬럼 찾기 ──
+            code_col = next(
+                (c for c in raw.columns if c.upper() in ["CODE","SYMBOL","TICKER"]),
+                raw.columns[0]
+            )
+            # ── 이름 컬럼 찾기 ──
+            name_col = next(
+                (c for c in raw.columns
+                 if c.upper() in ["NAME","CORP","COMPANY"] or c in ["종목명","Name"]),
+                raw.columns[1]
+            )
+            # ── PER/PBR 컬럼 찾기 ──
+            per_col = next(
+                (c for c in raw.columns if c.upper() == "PER"), None
+            )
+            pbr_col = next(
+                (c for c in raw.columns if c.upper() == "PBR"), None
+            )
 
-            # 이름 컬럼 찾기
-            name_col = None
-            for c in df.columns:
-                if c.upper() in ["NAME", "CORP", "COMPANY", "종목명"]:
-                    name_col = c
-                    break
-            if name_col is None and len(df.columns) > 1:
-                name_col = df.columns[1]
-
-            for _, row in df.iterrows():
-                code = str(row[code_col]).zfill(6) if code_col else ""
-                name = str(row[name_col]) if name_col else ""
-
-                if not code or code == "000000":
+            for _, r in raw.iterrows():
+                code = str(r[code_col]).strip().zfill(6)
+                nm   = str(r[name_col]).strip()
+                if not code or code == "000000" or nm in ["nan","None",""]:
                     continue
 
-                rec = {"티커": code, "종목명": name, "시장": market}
-
-                # PER, PBR, EPS, BPS가 있으면 같이 수집
-                for fin_col in ["PER", "PBR", "EPS", "BPS"]:
-                    matched = [c for c in df.columns if c.upper() == fin_col]
-                    if matched:
-                        rec[fin_col] = safe_float(row[matched[0]])
+                rec = {
+                    "ticker": code,
+                    "name":   nm,
+                    "market": mkt,
+                    "per":    safe_float(r[per_col]) if per_col else np.nan,
+                    "pbr":    safe_float(r[pbr_col]) if pbr_col else np.nan,
+                }
+                # ROE = PBR/PER * 100
+                if pd.notna(rec["per"]) and rec["per"] > 0 and pd.notna(rec["pbr"]):
+                    rec["roe"] = round(rec["pbr"] / rec["per"] * 100, 2)
+                else:
+                    rec["roe"] = np.nan
 
                 records.append(rec)
 
         except Exception as e:
-            errors.append(f"{market} 종목 리스트 조회 실패: {str(e)[:80]}")
+            errors.append(f"{mkt} 조회 실패: {str(e)[:80]}")
 
-    df_all = pd.DataFrame(records)
+    df = pd.DataFrame(records)
+    if df.empty:
+        return df, errors
 
-    if len(df_all) == 0:
-        return df_all, errors
-
-    # 테스트 모드: 시장별 상위 N개만
     if test_mode:
-        limit_per_market = test_limit // 2
-        df_all = (df_all.groupby("시장", group_keys=False)
-                        .apply(lambda x: x.head(limit_per_market))
-                        .reset_index(drop=True))
+        lim = test_limit // 2
+        df = (df.groupby("market", group_keys=False)
+                .apply(lambda x: x.head(lim))
+                .reset_index(drop=True))
 
-    return df_all, errors
+    return df, errors
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_ohlcv_data(ticker: str, fromdate: str, todate: str) -> pd.DataFrame:
+def get_ohlcv(ticker: str, fromdate: str, todate: str) -> pd.DataFrame:
     """
-    FinanceDataReader로 단일 종목 OHLCV 수집
-    FDR 반환 컬럼: Open, High, Low, Close, Volume, Change
-    → 한글 컬럼으로 변환 후 거래대금(원) 추가
+    FDR DataReader → 영문 컬럼 DataFrame 반환
+    컬럼: open, high, low, close, volume, amount(원)
     """
     try:
-        df = fdr.DataReader(ticker, fromdate, todate)
-
-        if df is None or len(df) == 0:
+        raw = fdr.DataReader(ticker, fromdate, todate)
+        if raw is None or raw.empty:
             return pd.DataFrame()
 
-        # 컬럼명 표준화 (영문 → 한글)
-        rename_map = {
-            "Open": "시가", "High": "고가", "Low": "저가",
-            "Close": "종가", "Volume": "거래량", "Adj Close": "수정종가"
+        # FDR 컬럼 → 소문자 영문 통일
+        col_map = {
+            "Open":"open", "High":"high", "Low":"low",
+            "Close":"close", "Volume":"volume",
+            "Adj Close":"adj_close", "Change":"change"
         }
-        df = df.rename(columns=rename_map)
+        raw = raw.rename(columns=col_map)
 
         # 필수 컬럼 확인
-        if "종가" not in df.columns or "거래량" not in df.columns:
+        if "close" not in raw.columns or "volume" not in raw.columns:
             return pd.DataFrame()
 
-        # 거래대금 계산: 종가(원) × 거래량(주) = 원 단위
-        df["거래대금"] = df["종가"] * df["거래량"]
+        # 거래대금(원) = 종가 × 거래량
+        raw["amount"] = raw["close"] * raw["volume"]
+        raw = raw.dropna(subset=["close", "volume"])
 
-        # 결측치 제거
-        df = df.dropna(subset=["종가", "거래량"])
-
-        return df
+        return raw
 
     except Exception:
         return pd.DataFrame()
 
 
-def calculate_roe(per_val, pbr_val) -> float:
-    """
-    ROE 역산: ROE = PBR / PER * 100
-    FDR에서 EPS/BPS가 없을 때 PER, PBR로 ROE 추정
-    ROE = (순이익/자본) = (EPS/BPS) = (P/PER) / (P/PBR) = PBR/PER
-    """
-    try:
-        per = float(per_val)
-        pbr = float(pbr_val)
-        if per > 0 and pbr > 0:
-            return round((pbr / per) * 100, 2)
-    except (TypeError, ValueError):
-        pass
-    return np.nan
-
-
 # ─────────────────────────────────────────
-#  점수 계산 함수
+#  점수 계산
 # ─────────────────────────────────────────
 
-def calculate_financial_score(per, pbr, roe,
-                               per_max=15, pbr_max=1.5, roe_min=10) -> float:
-    """
-    재무점수 (50점 만점)
-    - PER 점수 (20점): 낮을수록 가점
-    - PBR 점수 (15점): 낮을수록 가점
-    - ROE 점수 (15점): 높을수록 가점
-    """
-    score = 0
-
-    # PER 점수 (20점)
+def score_financial(per, pbr, roe, per_max, pbr_max, roe_min) -> float:
+    """재무점수 50점 만점"""
+    s = 0.0
     if pd.notna(per) and per > 0:
-        per_score = max(0, 20 * (1 - (per - 1) / max(per_max - 1, 1)))
-        score += min(20, per_score)
-
-    # PBR 점수 (15점)
+        s += min(20, max(0, 20 * (1 - (per - 1) / max(per_max - 1, 1))))
     if pd.notna(pbr) and pbr > 0:
-        pbr_score = max(0, 15 * (1 - (pbr - 0.5) / max(pbr_max - 0.5, 0.1)))
-        score += min(15, pbr_score)
-
-    # ROE 점수 (15점)
+        s += min(15, max(0, 15 * (1 - (pbr - 0.5) / max(pbr_max - 0.5, 0.1))))
     if pd.notna(roe) and roe >= roe_min:
-        roe_score = min(15, 15 * (roe - roe_min) / max(30 - roe_min, 1))
-        score += roe_score
-
-    return round(score, 1)
+        s += min(15, 15 * (roe - roe_min) / max(30 - roe_min, 1))
+    return round(s, 1)
 
 
-def calculate_chart_score(close_series: pd.Series,
-                           volume_series: pd.Series) -> dict:
-    """
-    차트점수 (40점 만점) - 조건별 8점씩
-    1. 현재가 > 20일 이동평균
-    2. 20일선 > 60일선 (정배열)
-    3. 60일선 상승 추세
-    4. 20일 신고가 돌파 (±1% 허용)
-    5. 거래량 ≥ 20일 평균 × 1.5
-    """
-    result = {
-        "차트점수": 0,
-        "20일선위": False,
-        "정배열": False,
-        "60일선상승": False,
-        "신고가": False,
-        "거래량급증": False,
-        "RSI": np.nan,
-        "MA20": np.nan,
-        "MA60": np.nan,
+def score_chart(close_s: pd.Series, vol_s: pd.Series) -> dict:
+    """차트점수 40점 만점 (각 8점 × 5개 조건)"""
+    res = {
+        "score": 0,
+        "above_ma20": False, "golden_cross": False,
+        "ma60_rising": False, "new_high": False, "vol_surge": False,
+        "rsi": np.nan, "ma20": np.nan, "ma60": np.nan,
     }
+    if len(close_s) < 60:
+        return res
 
-    if len(close_series) < 60:
-        return result
+    c  = close_s.values.astype(float)
+    v  = vol_s.values.astype(float)
+    ma20 = float(np.mean(c[-20:]))
+    ma60 = float(np.mean(c[-60:]))
+    cur  = float(c[-1])
 
-    close = close_series.values
-    volume = volume_series.values
+    res["ma20"] = round(ma20, 0)
+    res["ma60"] = round(ma60, 0)
 
-    ma20 = np.mean(close[-20:])
-    ma60 = np.mean(close[-60:])
-    current_price = close[-1]
-
-    result["MA20"] = round(ma20, 0)
-    result["MA60"] = round(ma60, 0)
-
-    # 조건 1: 현재가 > 20일선
-    if current_price > ma20:
-        result["20일선위"] = True
-        result["차트점수"] += 8
-
-    # 조건 2: 20일선 > 60일선 (정배열)
+    if cur > ma20:
+        res["above_ma20"] = True;  res["score"] += 8
     if ma20 > ma60:
-        result["정배열"] = True
-        result["차트점수"] += 8
+        res["golden_cross"] = True; res["score"] += 8
+    if len(c) >= 65 and np.mean(c[-60:]) > np.mean(c[-65:-5]):
+        res["ma60_rising"] = True;  res["score"] += 8
+    if cur >= float(np.max(c[-20:])) * 0.99:
+        res["new_high"] = True;     res["score"] += 8
+    if len(v) >= 20:
+        avg_v = float(np.mean(v[-20:]))
+        if avg_v > 0 and float(v[-1]) >= avg_v * 1.5:
+            res["vol_surge"] = True; res["score"] += 8
 
-    # 조건 3: 60일선 상승 (과거 대비 최근 60일선이 더 높으면 상승)
-    if len(close) >= 65:
-        ma60_recent = np.mean(close[-60:])
-        ma60_prev = np.mean(close[-65:-5])
-        if ma60_recent > ma60_prev:
-            result["60일선상승"] = True
-            result["차트점수"] += 8
-
-    # 조건 4: 20일 신고가 돌파 (1% 이내 근접도 인정)
-    high_20d = np.max(close[-20:])
-    if current_price >= high_20d * 0.99:
-        result["신고가"] = True
-        result["차트점수"] += 8
-
-    # 조건 5: 거래량 급증
-    if len(volume) >= 20:
-        vol_avg_20 = np.mean(volume[-20:])
-        vol_current = volume[-1]
-        if vol_avg_20 > 0 and vol_current >= vol_avg_20 * 1.5:
-            result["거래량급증"] = True
-            result["차트점수"] += 8
-
-    # RSI (14일)
-    result["RSI"] = calculate_rsi(pd.Series(close), period=14)
-
-    return result
+    res["rsi"] = calculate_rsi(pd.Series(c), 14)
+    return res
 
 
-def calculate_liquidity_score(avg_trade_amount_eok: float,
-                               min_amount: float = 30) -> float:
-    """
-    유동성점수 (10점 만점) - 로그 스케일
-    30억 미만: 0점 / 100억: ~4점 / 500억 이상: 10점
-    """
-    if pd.isna(avg_trade_amount_eok) or avg_trade_amount_eok < min_amount:
+def score_liquidity(avg_eok: float, min_eok: float = 30) -> float:
+    """유동성점수 10점 만점 (로그스케일)"""
+    if pd.isna(avg_eok) or avg_eok < min_eok:
         return 0.0
-
-    score = 10 * (math.log10(avg_trade_amount_eok) - math.log10(min_amount)) / \
-            (math.log10(500) - math.log10(min_amount))
-    return round(min(10.0, max(0.0, score)), 1)
+    s = 10 * (math.log10(avg_eok) - math.log10(min_eok)) / \
+             (math.log10(500)     - math.log10(min_eok))
+    return round(min(10.0, max(0.0, s)), 1)
 
 
 # ─────────────────────────────────────────
-#  메인 스크리닝 함수
+#  메인 스크리닝
 # ─────────────────────────────────────────
 
-def run_screener(params: dict, progress_bar, status_text,
-                 log_container) -> pd.DataFrame:
-    """
-    전체 스크리닝 파이프라인
-    1. 종목 리스트 수집 (FDR)
-    2. ETF/우선주 제외
-    3. 재무 필터 (PER/PBR/ROE)
-    4. OHLCV + 기술적 분석
-    5. 거래대금 필터
-    6. 점수 계산 → TOP N 추출
-    """
-    logs = []
+def run_screener(params, progress_bar, status_text, log_box) -> pd.DataFrame:
+    logs    = []
     results = []
     skipped = 0
 
-    base_date = get_business_date(1)   # 가장 최근 영업일
-    from_date = get_business_date(90)  # 약 3개월 전
+    base_date = get_business_date(1)
+    from_date = get_business_date(90)
 
-    # ── 1. 종목 리스트 수집 ──
-    status_text.text("📋 종목 리스트 수집 중... (FDR)")
-    ticker_df, list_errors = get_ticker_list(
-        params["test_mode"], params["test_limit"]
-    )
-    logs.extend(list_errors)
+    # 1. 종목 리스트
+    status_text.text("📋 종목 리스트 수집 중...")
+    df, errs = get_ticker_list(params["test_mode"], params["test_limit"])
+    logs.extend(errs)
 
-    if len(ticker_df) == 0:
-        st.error("종목 리스트를 가져올 수 없습니다. 네트워크 연결을 확인하세요.")
+    if df.empty:
+        st.error("종목 리스트를 가져올 수 없습니다.")
         return pd.DataFrame()
 
-    logs.append(f"수집 완료: 총 {len(ticker_df)}개 종목")
+    logs.append(f"수집: {len(df)}개")
 
-    # ── 2. ETF/ETN/SPAC 제외 ──
+    # 2. ETF/SPAC 제외
     if params["exclude_etf"]:
-        before = len(ticker_df)
-        ticker_df = ticker_df[~ticker_df["종목명"].apply(is_etf_etn_spac)]
-        logs.append(f"ETF/SPAC 제외: {before} → {len(ticker_df)}개")
+        before = len(df)
+        df = df[~df["name"].apply(is_etf_etn_spac)].reset_index(drop=True)
+        logs.append(f"ETF/SPAC 제외: {before}→{len(df)}")
 
-    # ── 3. 우선주 제외 ──
+    # 3. 우선주 제외
     if params["exclude_preferred"]:
-        before = len(ticker_df)
-        ticker_df = ticker_df[~ticker_df["종목명"].apply(is_preferred_stock)]
-        logs.append(f"우선주 제외: {before} → {len(ticker_df)}개")
+        before = len(df)
+        df = df[~df["name"].apply(is_preferred)].reset_index(drop=True)
+        logs.append(f"우선주 제외: {before}→{len(df)}")
 
-    # ── 4. 재무 필터 (FDR에서 수집된 PER/PBR 활용) ──
-    status_text.text(f"📊 재무 필터 적용 중... ({len(ticker_df)}개)")
-
-    # PER 컬럼 있으면 재무 필터 적용
-    has_fundamental = all(c in ticker_df.columns for c in ["PER", "PBR"])
-
-    if has_fundamental:
-        # ROE 계산 (PBR/PER * 100)
-        if "ROE" not in ticker_df.columns:
-            ticker_df["ROE"] = ticker_df.apply(
-                lambda r: calculate_roe(r.get("PER"), r.get("PBR")), axis=1
-            )
-
-        # 숫자 변환
-        for col in ["PER", "PBR", "ROE"]:
-            if col in ticker_df.columns:
-                ticker_df[col] = pd.to_numeric(ticker_df[col], errors="coerce")
-
-        pre = len(ticker_df)
-        ticker_df = ticker_df.dropna(subset=["PER", "PBR", "ROE"])
-        ticker_df = ticker_df[
-            (ticker_df["PER"] > 0) & (ticker_df["PER"] <= params["per_max"]) &
-            (ticker_df["PBR"] > 0) & (ticker_df["PBR"] <= params["pbr_max"]) &
-            (ticker_df["ROE"] >= params["roe_min"])
-        ]
-        logs.append(f"재무 필터: {pre}개 → {len(ticker_df)}개 통과")
+    # 4. 재무 필터
+    has_fin = df["per"].notna().sum() > 0
+    if has_fin:
+        before = len(df)
+        df = df.dropna(subset=["per","pbr","roe"])
+        df = df[
+            (df["per"] > 0) & (df["per"] <= params["per_max"]) &
+            (df["pbr"] > 0) & (df["pbr"] <= params["pbr_max"]) &
+            (df["roe"] >= params["roe_min"])
+        ].reset_index(drop=True)
+        logs.append(f"재무 필터: {before}→{len(df)}")
     else:
-        # FDR에 재무 데이터 없으면 PER/PBR/ROE NaN으로 유지
-        ticker_df["PER"] = np.nan
-        ticker_df["PBR"] = np.nan
-        ticker_df["ROE"] = np.nan
-        logs.append("⚠️ 재무 데이터 없음 - 재무 필터 미적용 (차트/유동성 기준만 적용)")
+        logs.append("⚠️ 재무 데이터 없음 - 재무 필터 미적용")
 
-    total_filtered = len(ticker_df)
-    if total_filtered == 0:
-        st.warning("재무 필터 통과 종목이 없습니다. PER/PBR/ROE 조건을 완화해보세요.")
+    total = len(df)
+    if total == 0:
+        st.warning("재무 필터 통과 종목 없음. 조건을 완화해보세요.")
         return pd.DataFrame()
 
-    # ── 5. 종목별 OHLCV + 기술적 분석 ──
-    # ※ itertuples()는 한글 컬럼명을 속성으로 접근 불가 → iterrows() 사용
-    ticker_df = ticker_df.reset_index(drop=True)
-    status_text.text(f"📈 기술적 분석 시작... (재무 통과 {total_filtered}개)")
+    status_text.text(f"📈 기술적 분석 시작... ({total}개)")
 
-    for i, row in ticker_df.iterrows():
-        ticker = str(row["티커"])
-        name   = str(row["종목명"])
-        market = str(row["시장"])
+    # 5. 종목별 분석 (모두 영문 컬럼 사용)
+    for i in range(total):
+        row = df.iloc[i]          # Series — 영문 키로만 접근
+        ticker = str(row["ticker"])
+        name   = str(row["name"])
+        market = str(row["market"])
+        per    = safe_float(row["per"])
+        pbr    = safe_float(row["pbr"])
+        roe    = safe_float(row["roe"])
 
-        progress = (i + 1) / total_filtered
-        progress_bar.progress(min(progress, 1.0))
+        progress_bar.progress(min((i + 1) / total, 1.0))
         if i % 5 == 0:
-            status_text.text(
-                f"📈 분석 중... ({i+1}/{total_filtered}) {name}"
-            )
+            status_text.text(f"📈 분석 중... ({i+1}/{total}) {name}")
 
         try:
-            # OHLCV 수집
-            ohlcv = get_ohlcv_data(ticker, from_date, base_date)
+            ohlcv = get_ohlcv(ticker, from_date, base_date)
 
-            if len(ohlcv) < 60:
-                logs.append(f"[SKIP] {ticker}({name}): 데이터 부족 ({len(ohlcv)}일)")
+            if ohlcv.empty or len(ohlcv) < 60:
+                logs.append(f"[SKIP] {ticker}({name}): 데이터 부족")
                 skipped += 1
                 continue
 
-            close        = ohlcv["종가"]
-            volume       = ohlcv["거래량"]
-            trade_amount = ohlcv["거래대금"]  # 원 단위
+            close_s  = ohlcv["close"].astype(float)
+            vol_s    = ohlcv["volume"].astype(float)
+            amount_s = ohlcv["amount"].astype(float)
 
-            # 거래대금 필터 (원 → 억원 변환)
-            avg_trade_eok = trade_amount.tail(20).mean() / 1e8
-            if avg_trade_eok < params["min_trade_eok"]:
+            # 거래대금 필터 (억원)
+            avg_eok = float(amount_s.tail(20).mean()) / 1e8
+            if avg_eok < params["min_trade_eok"]:
                 skipped += 1
                 continue
 
-            # 차트 점수 계산
-            chart = calculate_chart_score(close, volume)
+            # 차트 점수
+            chart = score_chart(close_s, vol_s)
 
-            # RSI 과열 필터
-            if pd.notna(chart["RSI"]) and chart["RSI"] >= params["rsi_max"]:
-                logs.append(
-                    f"[SKIP] {ticker}({name}): RSI 과열 {chart['RSI']:.1f}"
-                )
+            # RSI 과열 제외
+            if pd.notna(chart["rsi"]) and chart["rsi"] >= params["rsi_max"]:
+                logs.append(f"[SKIP] {ticker}({name}): RSI {chart['rsi']:.1f}")
                 skipped += 1
                 continue
-
-            # 재무 지표 (row는 Series이므로 .get() 사용)
-            per = safe_float(row.get("PER", np.nan))
-            pbr = safe_float(row.get("PBR", np.nan))
-            roe = safe_float(row.get("ROE", np.nan))
 
             # 점수 계산
-            fin_score = calculate_financial_score(
-                per, pbr, roe,
-                params["per_max"], params["pbr_max"], params["roe_min"]
-            )
-            liq_score   = calculate_liquidity_score(
-                avg_trade_eok, params["min_trade_eok"]
-            )
-            total_score = fin_score + chart["차트점수"] + liq_score
+            fin_s  = score_financial(per, pbr, roe,
+                                     params["per_max"], params["pbr_max"],
+                                     params["roe_min"])
+            liq_s  = score_liquidity(avg_eok, params["min_trade_eok"])
+            total_s = fin_s + chart["score"] + liq_s
 
-            # 손절가 / 목표가
-            current_price = float(close.iloc[-1])
-            stop_loss = round(current_price * (1 - params["stop_loss_pct"] / 100))
-            target    = round(current_price * (1 + params["target_pct"] / 100))
+            cur_price = float(close_s.iloc[-1])
+            stop_loss = round(cur_price * (1 - params["stop_loss_pct"] / 100))
+            target    = round(cur_price * (1 + params["target_pct"]    / 100))
 
-            # 리밸런싱 예정일 (분기 말)
+            # 리밸런싱 예정일
             today = datetime.today()
-            quarter_end = {1: 3, 2: 6, 3: 9, 4: 12}
-            q = (today.month - 1) // 3 + 1
-            rebal_month = quarter_end[q]
-            rebal_date  = datetime(today.year, rebal_month, 30)
-            if rebal_date < today:
-                next_q = (q % 4) + 1
-                next_year = today.year + (1 if q == 4 else 0)
-                rebal_date = datetime(next_year, quarter_end[next_q], 30)
+            qmap  = {1:3, 2:6, 3:9, 4:12}
+            q     = (today.month - 1) // 3 + 1
+            rd    = datetime(today.year, qmap[q], 30)
+            if rd < today:
+                nq   = (q % 4) + 1
+                ny   = today.year + (1 if q == 4 else 0)
+                rd   = datetime(ny, qmap[nq], 30)
 
             results.append({
-                "종목코드"            : ticker,
-                "종목명"              : name,
-                "시장"                : market,
-                "현재가"              : int(current_price),
-                "PER"                 : round(per, 2) if pd.notna(per) else "-",
-                "PBR"                 : round(pbr, 2) if pd.notna(pbr) else "-",
-                "ROE(%)"              : round(roe, 1) if pd.notna(roe) else "-",
-                "20일평균거래대금(억)" : round(avg_trade_eok, 1),
-                "RSI"                 : chart["RSI"],
-                "MA20"                : chart["MA20"],
-                "MA60"                : chart["MA60"],
-                "20일선위"            : "✅" if chart["20일선위"]   else "❌",
-                "정배열"              : "✅" if chart["정배열"]     else "❌",
-                "60일선상승"          : "✅" if chart["60일선상승"]  else "❌",
-                "20일신고가"          : "✅" if chart["신고가"]     else "❌",
-                "거래량급증"          : "✅" if chart["거래량급증"]  else "❌",
-                "재무점수(50)"        : fin_score,
-                "차트점수(40)"        : chart["차트점수"],
-                "유동성점수(10)"      : liq_score,
-                "종합점수(100)"       : round(total_score, 1),
-                "손절가"              : stop_loss,
-                "목표가"              : target,
-                "리밸런싱예정일"      : rebal_date.strftime("%Y-%m-%d"),
+                "rank":        0,           # 나중에 채움
+                "ticker":      ticker,
+                "name":        name,
+                "market":      market,
+                "price":       int(cur_price),
+                "per":         round(per, 2) if pd.notna(per) else None,
+                "pbr":         round(pbr, 2) if pd.notna(pbr) else None,
+                "roe":         round(roe, 1) if pd.notna(roe) else None,
+                "avg_eok":     round(avg_eok, 1),
+                "rsi":         chart["rsi"],
+                "ma20":        chart["ma20"],
+                "ma60":        chart["ma60"],
+                "above_ma20":  "✅" if chart["above_ma20"]  else "❌",
+                "golden_cross":"✅" if chart["golden_cross"] else "❌",
+                "ma60_rising": "✅" if chart["ma60_rising"]  else "❌",
+                "new_high":    "✅" if chart["new_high"]     else "❌",
+                "vol_surge":   "✅" if chart["vol_surge"]    else "❌",
+                "fin_score":   fin_s,
+                "chart_score": chart["score"],
+                "liq_score":   liq_s,
+                "total_score": round(total_s, 1),
+                "stop_loss":   stop_loss,
+                "target":      target,
+                "rebal_date":  rd.strftime("%Y-%m-%d"),
             })
 
         except Exception as e:
             logs.append(f"[ERR] {ticker}({name}): {str(e)[:60]}")
             skipped += 1
-            continue
 
     progress_bar.progress(1.0)
-    status_text.text(
-        f"✅ 완료! 후보 {len(results)}개 / 제외 {skipped}개"
-    )
+    status_text.text(f"✅ 완료! 후보 {len(results)}개 / 제외 {skipped}개")
 
-    # 로그 출력
     if logs:
-        with log_container.expander(
-            f"📋 처리 로그 ({len(logs)}건)", expanded=False
-        ):
-            for log in logs[-50:]:
-                st.text(log)
+        with log_box.expander(f"📋 처리 로그 ({len(logs)}건)", expanded=False):
+            for lg in logs[-50:]:
+                st.text(lg)
 
     if not results:
         return pd.DataFrame()
 
-    result_df = pd.DataFrame(results)
-    result_df = result_df.sort_values("종합점수(100)", ascending=False)
-    result_df.insert(0, "순위", range(1, len(result_df) + 1))
-
-    return result_df
+    out = pd.DataFrame(results)
+    out = out.sort_values("total_score", ascending=False).reset_index(drop=True)
+    out["rank"] = range(1, len(out) + 1)
+    return out
 
 
 # ─────────────────────────────────────────
-#  엑셀 다운로드 헬퍼
+#  엑셀 다운로드
 # ─────────────────────────────────────────
+
+# 출력용 한글 컬럼 매핑 (내부 영문 → 표시용 한글)
+COL_KO = {
+    "rank":         "순위",
+    "ticker":       "종목코드",
+    "name":         "종목명",
+    "market":       "시장",
+    "price":        "현재가",
+    "per":          "PER",
+    "pbr":          "PBR",
+    "roe":          "ROE(%)",
+    "avg_eok":      "20일평균거래대금(억)",
+    "rsi":          "RSI",
+    "ma20":         "MA20",
+    "ma60":         "MA60",
+    "above_ma20":   "20일선위",
+    "golden_cross": "정배열",
+    "ma60_rising":  "60일선상승",
+    "new_high":     "20일신고가",
+    "vol_surge":    "거래량급증",
+    "fin_score":    "재무점수(50)",
+    "chart_score":  "차트점수(40)",
+    "liq_score":    "유동성점수(10)",
+    "total_score":  "종합점수(100)",
+    "stop_loss":    "손절가",
+    "target":       "목표가",
+    "rebal_date":   "리밸런싱예정일",
+}
+
+DISPLAY_COLS = list(COL_KO.keys())
+
 
 def to_excel(df: pd.DataFrame) -> bytes:
-    """DataFrame → 엑셀 바이트 변환"""
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="매수후보")
+    renamed = df[DISPLAY_COLS].rename(columns=COL_KO)
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        renamed.to_excel(writer, index=False, sheet_name="매수후보")
         ws = writer.sheets["매수후보"]
         for col in ws.columns:
-            max_len = max(len(str(cell.value or "")) for cell in col)
-            ws.column_dimensions[col[0].column_letter].width = max_len + 4
-    return output.getvalue()
+            w = max(len(str(cell.value or "")) for cell in col)
+            ws.column_dimensions[col[0].column_letter].width = w + 4
+    return buf.getvalue()
 
 
 # ─────────────────────────────────────────
-#  Streamlit 사이드바 (필터 설정)
+#  사이드바
 # ─────────────────────────────────────────
 
 with st.sidebar:
     st.markdown("## ⚙️ 필터 설정")
 
-    # ── 모드 선택 ──
     st.markdown("### 🔧 분석 모드")
-    test_mode = st.toggle(
-        "테스트 모드 (빠른 실행)", value=True,
-        help="OFF: 전종목 분석 (시간 많이 소요) | ON: 상위 종목만 분석"
-    )
+    test_mode = st.toggle("테스트 모드 (빠른 실행)", value=True,
+        help="ON: 시장별 상위 종목만 | OFF: 전종목 (수십 분 소요)")
     if test_mode:
-        test_limit = st.slider(
-            "테스트 종목 수 (코스피+코스닥 합계)", 50, 300, 100, step=50
-        )
-        st.info(f"시장별 {test_limit//2}개씩 분석합니다.")
+        test_limit = st.slider("테스트 종목 수", 50, 300, 100, step=50)
+        st.info(f"시장별 {test_limit//2}개씩 분석")
     else:
         test_limit = 9999
         st.warning("⏳ 전종목 분석은 수십 분 소요됩니다.")
 
     st.divider()
-
-    # ── 재무 필터 ──
     st.markdown("### 📊 재무 필터")
-    per_max = st.number_input(
-        "PER 상한", min_value=1.0, max_value=50.0, value=15.0, step=0.5,
-        help="주가수익비율. 낮을수록 저평가 (기본 15배)"
-    )
-    pbr_max = st.number_input(
-        "PBR 상한", min_value=0.1, max_value=10.0, value=1.5, step=0.1,
-        help="주가순자산비율. 낮을수록 저평가 (기본 1.5배)"
-    )
-    roe_min = st.number_input(
-        "ROE 하한 (%)", min_value=0.0, max_value=50.0, value=10.0, step=1.0,
-        help="자기자본이익률 (기본 10%)"
-    )
+    per_max = st.number_input("PER 상한", 1.0, 50.0, 15.0, 0.5,
+        help="주가수익비율 (기본 15배)")
+    pbr_max = st.number_input("PBR 상한", 0.1, 10.0, 1.5, 0.1,
+        help="주가순자산비율 (기본 1.5배)")
+    roe_min = st.number_input("ROE 하한 (%)", 0.0, 50.0, 10.0, 1.0,
+        help="자기자본이익률 (기본 10%)")
 
     st.divider()
-
-    # ── 기술적 필터 ──
     st.markdown("### 📈 기술적 필터")
-    min_trade_eok = st.number_input(
-        "최소 평균 거래대금 (억원)", min_value=1.0, max_value=500.0,
-        value=30.0, step=5.0,
-        help="최근 20일 평균 거래대금 하한 (기본 30억원)"
-    )
-    rsi_max = st.number_input(
-        "RSI 상한 (과열 제외)", min_value=60.0, max_value=90.0,
-        value=70.0, step=1.0,
-        help="RSI가 이 값 이상이면 과열로 제외 (기본 70)"
-    )
+    min_trade_eok = st.number_input("최소 거래대금 (억원)", 1.0, 500.0, 30.0, 5.0,
+        help="20일 평균 거래대금 하한 (기본 30억원)")
+    rsi_max = st.number_input("RSI 상한 (과열 제외)", 60.0, 90.0, 70.0, 1.0,
+        help="RSI ≥ 이 값이면 과열로 제외")
 
     st.divider()
-
-    # ── 매도 기준 ──
     st.markdown("### 🎯 매도 기준")
-    stop_loss_pct = st.number_input(
-        "손절 기준 (%)", min_value=1.0, max_value=20.0, value=10.0, step=0.5,
-        help="매수가 대비 하락 시 손절 (기본 -10%)"
-    )
-    target_pct = st.number_input(
-        "목표 수익률 (%)", min_value=5.0, max_value=50.0, value=20.0, step=1.0,
-        help="매수가 대비 목표 수익률 (기본 +20%)"
-    )
+    stop_loss_pct = st.number_input("손절 기준 (%)", 1.0, 20.0, 10.0, 0.5)
+    target_pct    = st.number_input("목표 수익률 (%)", 5.0, 50.0, 20.0, 1.0)
 
     st.divider()
-
-    # ── 제외 옵션 ──
     st.markdown("### 🚫 제외 옵션")
     exclude_etf       = st.checkbox("ETF/ETN/SPAC 제외", value=True)
-    exclude_preferred = st.checkbox("우선주 제외", value=True)
+    exclude_preferred = st.checkbox("우선주 제외",        value=True)
 
     st.divider()
-
-    # ── 출력 설정 ──
     st.markdown("### 🏆 출력 설정")
-    top_n = st.slider("TOP N 출력 수", min_value=5, max_value=30, value=10, step=1)
+    top_n = st.slider("TOP N 출력 수", 5, 30, 10, 1)
 
-    run_button = st.button(
-        "🚀 스크리닝 시작", use_container_width=True, type="primary"
-    )
+    run_button = st.button("🚀 스크리닝 시작",
+                           use_container_width=True, type="primary")
 
 
 # ─────────────────────────────────────────
 #  메인 화면
 # ─────────────────────────────────────────
 
+st.markdown('<div class="main-title">📈 국내주식 매수 후보 TOP 10 추출기</div>',
+            unsafe_allow_html=True)
 st.markdown(
-    '<div class="main-title">📈 국내주식 매수 후보 TOP 10 추출기</div>',
-    unsafe_allow_html=True
-)
-st.markdown(
-    '<div class="sub-title">코스피 · 코스닥 전종목 | PER/PBR/ROE + 차트 조건 + 거래대금 복합 스크리닝</div>',
-    unsafe_allow_html=True
-)
+    '<div class="sub-title">코스피 · 코스닥 전종목 | PER/PBR/ROE + 차트 + 거래대금 복합 스크리닝</div>',
+    unsafe_allow_html=True)
 
-# 분석 기준 요약
 with st.expander("📋 분석 기준 보기", expanded=False):
-    col1, col2, col3 = st.columns(3)
-    with col1:
+    c1, c2, c3 = st.columns(3)
+    with c1:
         st.markdown("**📊 재무 필터 (50점)**")
-        st.markdown(f"""
-- PER ≤ **{per_max}배** (낮을수록 ↑)
-- PBR ≤ **{pbr_max}배** (낮을수록 ↑)
-- ROE ≥ **{roe_min}%** (높을수록 ↑)
-""")
-    with col2:
+        st.markdown(f"- PER ≤ **{per_max}배**\n- PBR ≤ **{pbr_max}배**\n- ROE ≥ **{roe_min}%**")
+    with c2:
         st.markdown("**📈 차트 조건 (40점, 각 8점)**")
-        st.markdown("""
-1. 현재가 > 20일 이동평균
-2. 20일선 > 60일선 (정배열)
-3. 60일선 상승 추세
-4. 20일 신고가 돌파 (±1%)
-5. 거래량 ≥ 20일 평균 × 1.5
-""")
-    with col3:
-        st.markdown("**💧 유동성 (10점) + 기타**")
-        st.markdown(f"""
-- 20일 평균 거래대금 ≥ **{min_trade_eok}억원**
-- RSI < **{rsi_max}** (과열 제외)
-- 손절가: 매수가 × **{1 - stop_loss_pct/100:.2f}**
-- 목표가: 매수가 × **{1 + target_pct/100:.2f}**
-""")
+        st.markdown("1. 현재가 > 20일선\n2. 20일선 > 60일선\n3. 60일선 상승\n4. 20일 신고가\n5. 거래량 1.5배↑")
+    with c3:
+        st.markdown("**💧 유동성 (10점)**")
+        st.markdown(
+            f"- 거래대금 ≥ **{min_trade_eok}억원**\n"
+            f"- RSI < **{rsi_max}**\n"
+            f"- 손절: ×**{1-stop_loss_pct/100:.2f}**\n"
+            f"- 목표: ×**{1+target_pct/100:.2f}**"
+        )
 
-# 데이터 출처 안내
 st.markdown("""
 <div class="info-box">
-💡 <b>데이터 출처:</b> FinanceDataReader (Python 3.14 완전 호환, API Key 불필요)<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<b>PER/PBR</b>: FDR StockListing 제공값 | <b>ROE</b>: PBR ÷ PER × 100 역산<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<b>OHLCV</b>: FDR DataReader | <b>거래대금</b>: 종가 × 거래량 (원 단위) → 억원 변환
+💡 <b>데이터:</b> FinanceDataReader (Python 3.14 호환, API Key 불필요)
+&nbsp;|&nbsp; <b>ROE</b>: PBR÷PER×100 역산
+&nbsp;|&nbsp; <b>거래대금</b>: 종가×거래량(원)→억원
 </div>
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────
-#  스크리닝 실행
+#  실행
 # ─────────────────────────────────────────
 
 if run_button:
-    params = {
-        "test_mode"        : test_mode,
-        "test_limit"       : test_limit,
-        "per_max"          : per_max,
-        "pbr_max"          : pbr_max,
-        "roe_min"          : roe_min,
-        "min_trade_eok"    : min_trade_eok,
-        "rsi_max"          : rsi_max,
-        "stop_loss_pct"    : stop_loss_pct,
-        "target_pct"       : target_pct,
-        "exclude_etf"      : exclude_etf,
-        "exclude_preferred": exclude_preferred,
-        "top_n"            : top_n,
-    }
+    params = dict(
+        test_mode=test_mode, test_limit=test_limit,
+        per_max=per_max, pbr_max=pbr_max, roe_min=roe_min,
+        min_trade_eok=min_trade_eok, rsi_max=rsi_max,
+        stop_loss_pct=stop_loss_pct, target_pct=target_pct,
+        exclude_etf=exclude_etf, exclude_preferred=exclude_preferred,
+        top_n=top_n,
+    )
 
     st.divider()
-
-    progress_bar  = st.progress(0)
-    status_text   = st.empty()
-    log_container = st.empty()
-    start_time    = time.time()
+    pbar      = st.progress(0)
+    stat_text = st.empty()
+    log_box   = st.empty()
+    t0        = time.time()
 
     with st.spinner("스크리닝 진행 중..."):
-        result_df = run_screener(
-            params, progress_bar, status_text, log_container
-        )
+        result_df = run_screener(params, pbar, stat_text, log_box)
 
-    elapsed = time.time() - start_time
+    elapsed = time.time() - t0
 
-    if result_df is None or len(result_df) == 0:
-        st.warning("조건을 충족하는 종목이 없습니다. 필터 기준을 완화해보세요.")
+    if result_df is None or result_df.empty:
+        st.warning("조건을 충족하는 종목이 없습니다. 필터를 완화해보세요.")
     else:
         top_df = result_df.head(top_n).copy()
 
-        # 요약 메트릭
         st.markdown(
-            f"### 🏆 매수 후보 TOP {min(top_n, len(top_df))}  "
-            f"<span style='font-size:0.8rem; color:#888;'>({elapsed:.0f}초 소요)</span>",
-            unsafe_allow_html=True
-        )
+            f"### 🏆 매수 후보 TOP {min(top_n, len(top_df))}"
+            f"<span style='font-size:0.8rem;color:#888;'> ({elapsed:.0f}초)</span>",
+            unsafe_allow_html=True)
 
-        c1, c2, c3, c4 = st.columns(4)
-        with c1: st.metric("분석 종목 수", f"{len(result_df)}개")
-        with c2: st.metric("1위 종목", top_df.iloc[0]["종목명"])
-        with c3: st.metric("1위 종합점수", f"{top_df.iloc[0]['종합점수(100)']}점")
-        with c4:
-            st.metric(
-                f"TOP{top_n} 평균점수",
-                f"{top_df['종합점수(100)'].mean():.1f}점"
-            )
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("분석 종목 수", f"{len(result_df)}개")
+        m2.metric("1위 종목",     top_df.iloc[0]["name"])
+        m3.metric("1위 점수",     f"{top_df.iloc[0]['total_score']}점")
+        m4.metric(f"TOP{top_n} 평균", f"{top_df['total_score'].mean():.1f}점")
 
         st.divider()
 
         # 상위 5개 카드
         st.markdown("#### 📌 상위 종목 요약")
         card_cols = st.columns(min(5, len(top_df)))
-        for idx, (_, r) in enumerate(top_df.head(5).iterrows()):
+        for idx in range(min(5, len(top_df))):
+            r  = top_df.iloc[idx]
+            sc = r["total_score"]
+            color = "#28a745" if sc>=70 else "#ffc107" if sc>=50 else "#dc3545"
             with card_cols[idx]:
-                sc = r["종합점수(100)"]
-                color = "#28a745" if sc >= 70 else "#ffc107" if sc >= 50 else "#dc3545"
                 st.markdown(f"""
 <div class="metric-card">
-  <div style="font-size:1.3rem;font-weight:bold;color:{color};">{int(r['순위'])}위</div>
-  <div style="font-weight:600;margin:4px 0;">{r['종목명']}</div>
-  <div style="color:#666;font-size:0.8rem;">{r['시장']}</div>
-  <div style="font-size:1.1rem;font-weight:bold;color:#1a1a2e;">{r['현재가']:,}원</div>
+  <div style="font-size:1.3rem;font-weight:bold;color:{color};">{int(r['rank'])}위</div>
+  <div style="font-weight:600;margin:4px 0;">{r['name']}</div>
+  <div style="color:#666;font-size:0.8rem;">{r['market']}</div>
+  <div style="font-size:1.1rem;font-weight:bold;color:#1a1a2e;">{r['price']:,}원</div>
   <div style="margin-top:6px;"><span class="score-badge">{sc}점</span></div>
   <div style="font-size:0.78rem;margin-top:6px;color:#555;">
-    목표가: <b>{r['목표가']:,}</b>원<br>
-    손절가: <b style="color:#dc3545;">{r['손절가']:,}</b>원
+    목표: <b>{r['target']:,}</b>원<br>
+    손절: <b style="color:#dc3545;">{r['stop_loss']:,}</b>원
   </div>
-</div>
-""", unsafe_allow_html=True)
+</div>""", unsafe_allow_html=True)
 
         st.divider()
 
-        # 전체 결과 테이블
+        # 결과 테이블 (한글 컬럼으로 rename해서 표시)
         st.markdown("#### 📊 전체 결과 테이블")
-        display_cols = [
-            "순위", "종목코드", "종목명", "시장", "현재가",
-            "PER", "PBR", "ROE(%)", "20일평균거래대금(억)",
-            "RSI", "20일선위", "정배열", "60일선상승", "20일신고가", "거래량급증",
-            "재무점수(50)", "차트점수(40)", "유동성점수(10)", "종합점수(100)",
-            "손절가", "목표가", "리밸런싱예정일",
-        ]
-        display_cols = [c for c in display_cols if c in top_df.columns]
-
+        show_df = top_df[DISPLAY_COLS].rename(columns=COL_KO)
+        fmt = {"현재가":"{:,}", "손절가":"{:,}", "목표가":"{:,}"}
         st.dataframe(
-            top_df[display_cols].style.format(
-                {"현재가": "{:,}", "손절가": "{:,}", "목표가": "{:,}"},
-                na_rep="-"
-            ),
-            use_container_width=True,
-            height=400,
+            show_df.style.format(fmt, na_rep="-"),
+            use_container_width=True, height=400
         )
 
         # 엑셀 다운로드
@@ -858,8 +673,8 @@ if run_button:
         dl1, dl2 = st.columns([1, 3])
         with dl1:
             st.download_button(
-                label="📥 엑셀 다운로드",
-                data=to_excel(top_df[display_cols]),
+                "📥 엑셀 다운로드",
+                data=to_excel(top_df),
                 file_name=f"매수후보TOP{top_n}_{datetime.today().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
@@ -867,8 +682,8 @@ if run_button:
         with dl2:
             st.caption(
                 f"📅 기준일: {get_business_date(1)} | "
-                f"{'🧪 테스트 모드' if test_mode else '🔥 실전 모드'} | "
-                f"총 {len(result_df)}개 후보 중 TOP{top_n}"
+                f"{'🧪 테스트' if test_mode else '🔥 실전'} 모드 | "
+                f"후보 {len(result_df)}개 중 TOP{top_n}"
             )
 
         # 매도 전략
@@ -877,10 +692,10 @@ if run_button:
         st.markdown(f"""
 | 구분 | 기준 | 비고 |
 |------|------|------|
-| 📉 손절가 | 매수가 × **{(1 - stop_loss_pct/100):.2f}** (-{stop_loss_pct:.0f}%) | 무조건 손절 |
-| 📈 익절가 | 매수가 × **{(1 + target_pct/100):.2f}** (+{target_pct:.0f}%) | 분할 매도 권장 |
-| ⚠️ 추가 검토 | 현재가가 **20일 이동평균 이탈** 시 | 매도 검토 |
-| 🔄 리밸런싱 | **분기 말** (3/6/9/12월 30일) | 조건 탈락 종목 제외 |
+| 📉 손절가 | 매수가 × **{1-stop_loss_pct/100:.2f}** (-{stop_loss_pct:.0f}%) | 무조건 손절 |
+| 📈 익절가 | 매수가 × **{1+target_pct/100:.2f}** (+{target_pct:.0f}%) | 분할 매도 권장 |
+| ⚠️ 추가 검토 | 현재가 **20일선 이탈** 시 | 매도 검토 |
+| 🔄 리밸런싱 | **분기 말** (3/6/9/12월) | 조건 탈락 종목 제외 |
 """)
 
 # ─────────────────────────────────────────
@@ -890,16 +705,12 @@ st.markdown("""
 <div class="disclaimer">
 ⚠️ <b>투자 위험 고지</b><br>
 이 도구는 <b>투자 권유가 아닌 후보 추출 도구</b>입니다.
-제공되는 정보는 투자 의사결정의 참고자료일 뿐이며,
-실제 투자에 따른 손실에 대해 어떠한 책임도 지지 않습니다.<br>
-주식 투자는 원금 손실이 발생할 수 있으며,
-모든 투자 결정과 책임은 투자자 본인에게 있습니다.<br>
-<b>데이터 출처:</b> FinanceDataReader | <b>분석 기간:</b> 최근 3개월(60영업일)
+제공되는 정보는 참고자료이며, 실제 투자 손실에 대한 책임은 투자자 본인에게 있습니다.<br>
+<b>데이터:</b> FinanceDataReader | <b>분석 기간:</b> 최근 3개월(60영업일)
 </div>
 """, unsafe_allow_html=True)
 
 st.markdown(
     "<p style='text-align:center;font-size:0.75rem;color:#aaa;margin-top:8px;'>"
-    "Made by Ryangeun · 국내주식 퀀트 MVP v1.1 · FinanceDataReader 기반</p>",
-    unsafe_allow_html=True,
-)
+    "Made by Ryangeun · 국내주식 퀀트 MVP v1.2 · FinanceDataReader 기반</p>",
+    unsafe_allow_html=True)
