@@ -1,8 +1,17 @@
 """
 =============================================================
   국내주식 매수 후보 TOP 10 자동 추출기
-  작성자: Ryangeun (quant MVP v1.3 - 완전 안정화)
+  작성자: Ryangeun (quant MVP v1.4 - KeyError 완전 수정)
   데이터: FinanceDataReader (Python 3.14 호환)
+
+  [수정 이력 v1.4]
+  - KeyError: row["mkt"] 완전 수정
+    원인: groupby().apply().reset_index()가 pandas 버전에 따라
+          "mkt" 컬럼을 인덱스로 흡수하는 버그
+    해결: groupby 제거 → pd.concat() 방식으로 교체
+          + 컬럼 존재 여부 명시적 검증 추가
+  - FDR StockListing "Market" / "Mkt" fallback 처리
+  - 모든 row 접근 전 컬럼 안전성 보장
 
   [FDR 실제 컬럼명 - 소스코드 직접 확인]
   StockListing('KOSPI'/'KOSDAQ') → KrxMarcapListingCache
@@ -151,7 +160,7 @@ def is_preferred(name: str) -> bool:
 
 # ─────────────────────────────────────────
 #  데이터 수집
-#  [검증된 FDR 실제 컬럼명 사용]
+#  [KeyError 수정 핵심: groupby 제거 + 컬럼 명시 검증]
 # ─────────────────────────────────────────
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -160,10 +169,17 @@ def get_ticker_list(test_mode: bool, test_limit: int) -> tuple:
     FDR StockListing('KOSPI'/'KOSDAQ') 호출
     반환 컬럼(소스 확인): Code, Name, Market, Close, Volume,
                           Amount, Marcap, Stocks, MarketId 등
-    → 내부 표준 컬럼: code, name, mkt, close, volume, amount
+
+    [v1.4 핵심 수정]
+    - groupby().apply().reset_index() 제거
+      → pandas 버전에 따라 "mkt" 컬럼이 인덱스로 흡수되는 버그 방지
+    - pd.concat() 방식으로 시장별 데이터 합치기
+    - 컬럼 생성 즉시 값 할당 (Series.apply 방식 유지)
+    - 최종 DataFrame 컬럼 검증 후 반환
     """
-    records = []
-    errors  = []
+    records_kospi  = []
+    records_kosdaq = []
+    errors         = []
 
     for mkt_name in ["KOSPI", "KOSDAQ"]:
         try:
@@ -173,62 +189,98 @@ def get_ticker_list(test_mode: bool, test_limit: int) -> tuple:
                 errors.append(f"{mkt_name}: 데이터 없음")
                 continue
 
-            # ── 실제 컬럼 확인 후 안전하게 접근 ──
+            # ── 실제 컬럼 확인 ──
             cols = raw.columns.tolist()
 
-            # Code 컬럼 (소스에서 확인: 'Code')
-            code_col = "Code" if "Code" in cols else cols[0]
+            # Code 컬럼
+            code_col = next(
+                (c for c in ["Code", "code", "Symbol", "symbol"] if c in cols),
+                cols[0]
+            )
 
-            # Name 컬럼 (소스에서 확인: 'Name')
-            name_col = "Name" if "Name" in cols else cols[1]
+            # Name 컬럼
+            name_col = next(
+                (c for c in ["Name", "name", "종목명"] if c in cols),
+                cols[1]
+            )
 
-            # Close 컬럼 (당일 종가, 있으면 사용)
-            close_col = "Close" if "Close" in cols else None
+            # Close 컬럼 (있으면 사용)
+            close_col = next(
+                (c for c in ["Close", "close", "종가"] if c in cols),
+                None
+            )
 
             # Volume 컬럼
-            vol_col = "Volume" if "Volume" in cols else None
+            vol_col = next(
+                (c for c in ["Volume", "volume", "거래량"] if c in cols),
+                None
+            )
 
-            # Amount 컬럼 (거래대금, 있으면 사용)
-            amt_col = "Amount" if "Amount" in cols else None
+            # Amount 컬럼 (거래대금)
+            amt_col = next(
+                (c for c in ["Amount", "amount", "거래대금"] if c in cols),
+                None
+            )
+
+            # ── records 생성 (일반 for loop, groupby 미사용) ──
+            target_list = records_kospi if mkt_name == "KOSPI" else records_kosdaq
 
             for idx in range(len(raw)):
-                row = raw.iloc[idx]  # Series로 접근 - 인덱스 번호 사용
+                try:
+                    row = raw.iloc[idx]
 
-                code = str(row[code_col]).strip().zfill(6)
-                name = str(row[name_col]).strip()
+                    code = str(row[code_col]).strip().zfill(6)
+                    name = str(row[name_col]).strip()
 
-                # 유효성 검사
-                if not code or code == "000000":
+                    # 유효성 검사
+                    if not code or code == "000000":
+                        continue
+                    if name in ["nan", "None", "", "NaN"]:
+                        continue
+
+                    rec = {
+                        "code":   code,
+                        "name":   name,
+                        "mkt":    mkt_name,  # 문자열 직접 할당 (컬럼 의존 없음)
+                        "close0": safe_float(row[close_col]) if close_col else np.nan,
+                        "vol0":   safe_float(row[vol_col])   if vol_col   else np.nan,
+                        "amt0":   safe_float(row[amt_col])   if amt_col   else np.nan,
+                    }
+                    target_list.append(rec)
+
+                except Exception as row_e:
+                    errors.append(f"{mkt_name} row{idx} 오류: {str(row_e)[:60]}")
                     continue
-                if name in ["nan", "None", "", "NaN"]:
-                    continue
-
-                rec = {
-                    "code":   code,
-                    "name":   name,
-                    "mkt":    mkt_name,   # FDR에서 받은 시장명 직접 사용
-                    "close0": safe_float(row[close_col])  if close_col else np.nan,
-                    "vol0":   safe_float(row[vol_col])    if vol_col   else np.nan,
-                    "amt0":   safe_float(row[amt_col])    if amt_col   else np.nan,
-                }
-                records.append(rec)
 
         except Exception as e:
             errors.append(f"{mkt_name} 조회 실패: {str(e)[:100]}")
 
-    df = pd.DataFrame(records)
+    # ── 테스트 모드: 각 시장별 상위 N개 슬라이싱 (groupby 없이) ──
+    lim = (test_limit // 2) if test_mode else None
 
-    if df.empty:
-        return df, errors
+    if lim is not None:
+        records_kospi  = records_kospi[:lim]
+        records_kosdaq = records_kosdaq[:lim]
 
-    # 테스트 모드: 시장별 상위 N개
-    if test_mode:
-        lim = test_limit // 2
-        df = (
-            df.groupby("mkt", group_keys=False)
-              .apply(lambda x: x.head(lim))
-              .reset_index(drop=True)
-        )
+    all_records = records_kospi + records_kosdaq
+
+    if not all_records:
+        return pd.DataFrame(), errors
+
+    # ── DataFrame 생성 ──
+    df = pd.DataFrame(all_records)
+
+    # ── 필수 컬럼 검증 (KeyError 방지 최종 안전장치) ──
+    required_cols = ["code", "name", "mkt"]
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        errors.append(f"필수 컬럼 누락: {missing} / 실제 컬럼: {df.columns.tolist()}")
+        return pd.DataFrame(), errors
+
+    # ── mkt 컬럼 값 검증 ──
+    if df["mkt"].isna().any() or (df["mkt"] == "").any():
+        errors.append("mkt 컬럼에 빈 값 존재 → 제거 처리")
+        df = df[df["mkt"].notna() & (df["mkt"] != "")].reset_index(drop=True)
 
     return df, errors
 
@@ -380,24 +432,31 @@ def run_screener(params: dict, pbar, stat, logbox) -> pd.DataFrame:
     df, errs = get_ticker_list(params["test_mode"], params["test_limit"])
     logs.extend(errs)
 
-    if df.empty:
+    if df is None or df.empty:
         st.error("종목 리스트를 가져올 수 없습니다. 네트워크를 확인하세요.")
         return pd.DataFrame()
 
-    logs.append(f"수집 완료: {len(df)}개")
+    # ── 컬럼 존재 최종 확인 (run_screener 진입 시점) ──
+    required = ["code", "name", "mkt"]
+    for col in required:
+        if col not in df.columns:
+            st.error(f"DataFrame에 '{col}' 컬럼이 없습니다. 실제 컬럼: {df.columns.tolist()}")
+            return pd.DataFrame()
+
+    logs.append(f"수집 완료: {len(df)}개 (컬럼: {df.columns.tolist()})")
 
     # 2. ETF/SPAC 제외
     if params["excl_etf"]:
         before = len(df)
-        mask = df["name"].apply(is_etf_etn_spac)
-        df = df[~mask].reset_index(drop=True)
+        mask   = df["name"].apply(is_etf_etn_spac)
+        df     = df[~mask].reset_index(drop=True)
         logs.append(f"ETF/SPAC 제외: {before} → {len(df)}개")
 
     # 3. 우선주 제외
     if params["excl_pref"]:
         before = len(df)
-        mask = df["name"].apply(is_preferred)
-        df = df[~mask].reset_index(drop=True)
+        mask   = df["name"].apply(is_preferred)
+        df     = df[~mask].reset_index(drop=True)
         logs.append(f"우선주 제외: {before} → {len(df)}개")
 
     total = len(df)
@@ -408,12 +467,26 @@ def run_screener(params: dict, pbar, stat, logbox) -> pd.DataFrame:
     stat.text(f"📈 기술적 분석 시작... (총 {total}개)")
 
     # 4. 종목별 분석
-    # df.iloc[i]로 행 접근, 모두 영문 소문자 키 사용
+    # [v1.4] iloc[i]로 접근 후 필수 키 명시적으로 꺼냄
     for i in range(total):
-        row    = df.iloc[i]           # pandas Series
-        code   = str(row["code"])     # 영문 소문자 키
-        name   = str(row["name"])
-        mkt    = str(row["mkt"])
+        row = df.iloc[i]  # pandas Series
+
+        # 필수 값 안전하게 추출 (KeyError 원천 차단)
+        try:
+            code = str(row["code"])
+            name = str(row["name"])
+            mkt  = str(row["mkt"])
+        except KeyError as ke:
+            logs.append(f"[ERR] row{i} 컬럼 접근 실패: {ke} / 인덱스: {row.index.tolist()}")
+            skipped += 1
+            continue
+
+        # 값 유효성 검사
+        if not code or code in ["nan", "None"]:
+            skipped += 1
+            continue
+        if not mkt or mkt in ["nan", "None"]:
+            mkt = "UNKNOWN"
 
         pbar.progress(min((i + 1) / total, 1.0))
         if i % 5 == 0:
@@ -428,9 +501,9 @@ def run_screener(params: dict, pbar, stat, logbox) -> pd.DataFrame:
                 continue
 
             # numpy array로 변환 (영문 컬럼만 사용)
-            close_arr  = ohlcv["close"].values.astype(float)
-            vol_arr    = ohlcv["volume"].values.astype(float)
-            amt_arr    = ohlcv["amount"].values.astype(float)
+            close_arr = ohlcv["close"].values.astype(float)
+            vol_arr   = ohlcv["volume"].values.astype(float)
+            amt_arr   = ohlcv["amount"].values.astype(float)
 
             # 거래대금 필터 (억원)
             avg_eok = float(np.mean(amt_arr[-20:])) / 1e8
@@ -456,36 +529,36 @@ def run_screener(params: dict, pbar, stat, logbox) -> pd.DataFrame:
             target    = round(cur_price * (1 + params["tgt_pct"]  / 100))
 
             # 리밸런싱 예정일
-            today  = datetime.today()
-            qmap   = {1: 3, 2: 6, 3: 9, 4: 12}
-            q      = (today.month - 1) // 3 + 1
-            rd     = datetime(today.year, qmap[q], 30)
+            today = datetime.today()
+            qmap  = {1: 3, 2: 6, 3: 9, 4: 12}
+            q     = (today.month - 1) // 3 + 1
+            rd    = datetime(today.year, qmap[q], 30)
             if rd < today:
                 nq = (q % 4) + 1
                 ny = today.year + (1 if q == 4 else 0)
                 rd = datetime(ny, qmap[nq], 30)
 
             results.append({
-                "rank":        0,
-                "code":        code,
-                "name":        name,
-                "mkt":         mkt,
-                "price":       int(cur_price),
-                "avg_eok":     round(avg_eok, 1),
-                "rsi":         round(chart["rsi"], 1) if np.isfinite(chart["rsi"]) else None,
-                "ma20":        int(chart["ma20"])      if np.isfinite(chart["ma20"]) else None,
-                "ma60":        int(chart["ma60"])      if np.isfinite(chart["ma60"]) else None,
-                "above_ma20":  "✅" if chart["above_ma20"]   else "❌",
-                "golden_cross":"✅" if chart["golden_cross"]  else "❌",
-                "ma60_rising": "✅" if chart["ma60_rising"]   else "❌",
-                "new_high_20": "✅" if chart["new_high_20"]   else "❌",
-                "vol_surge":   "✅" if chart["vol_surge"]     else "❌",
-                "chart_score": chart["score"],
-                "liq_score":   liq_s,
-                "total_score": round(total_s, 1),
-                "stop_loss":   stop_loss,
-                "target":      target,
-                "rebal":       rd.strftime("%Y-%m-%d"),
+                "rank":         0,
+                "code":         code,
+                "name":         name,
+                "mkt":          mkt,
+                "price":        int(cur_price),
+                "avg_eok":      round(avg_eok, 1),
+                "rsi":          round(chart["rsi"], 1) if np.isfinite(chart["rsi"]) else None,
+                "ma20":         int(chart["ma20"])      if np.isfinite(chart["ma20"]) else None,
+                "ma60":         int(chart["ma60"])      if np.isfinite(chart["ma60"]) else None,
+                "above_ma20":   "✅" if chart["above_ma20"]   else "❌",
+                "golden_cross": "✅" if chart["golden_cross"]  else "❌",
+                "ma60_rising":  "✅" if chart["ma60_rising"]   else "❌",
+                "new_high_20":  "✅" if chart["new_high_20"]   else "❌",
+                "vol_surge":    "✅" if chart["vol_surge"]     else "❌",
+                "chart_score":  chart["score"],
+                "liq_score":    liq_s,
+                "total_score":  round(total_s, 1),
+                "stop_loss":    stop_loss,
+                "target":       target,
+                "rebal":        rd.strftime("%Y-%m-%d"),
             })
 
         except Exception as e:
@@ -669,10 +742,10 @@ if run_btn:
     )
 
     st.divider()
-    pbar    = st.progress(0)
-    stat    = st.empty()
-    logbox  = st.empty()
-    t0      = time.time()
+    pbar   = st.progress(0)
+    stat   = st.empty()
+    logbox = st.empty()
+    t0     = time.time()
 
     with st.spinner("스크리닝 진행 중..."):
         result_df = run_screener(params, pbar, stat, logbox)
@@ -691,9 +764,9 @@ if run_btn:
         )
 
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("분석 종목 수",   f"{len(result_df)}개")
-        m2.metric("1위 종목",        top_df.iloc[0]["name"])
-        m3.metric("1위 점수",        f"{top_df.iloc[0]['total_score']}점")
+        m1.metric("분석 종목 수",    f"{len(result_df)}개")
+        m2.metric("1위 종목",         top_df.iloc[0]["name"])
+        m3.metric("1위 점수",         f"{top_df.iloc[0]['total_score']}점")
         m4.metric(f"TOP{top_n} 평균", f"{top_df['total_score'].mean():.1f}점")
 
         st.divider()
@@ -790,6 +863,6 @@ st.markdown("""
 
 st.markdown(
     "<p style='text-align:center;font-size:0.75rem;color:#aaa;margin-top:8px;'>"
-    "Made by Ryangeun · 국내주식 퀀트 MVP v1.3 · FinanceDataReader 기반</p>",
+    "Made by Ryangeun · 국내주식 퀀트 MVP v1.4 · FinanceDataReader 기반</p>",
     unsafe_allow_html=True
 )
