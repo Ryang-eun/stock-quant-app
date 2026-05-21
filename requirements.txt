@@ -4,8 +4,8 @@ numpy
 plotly
 requests
 beautifulsoup4
-lxml==4.9.4
-pykrx==1.0.51
+lxml
+pykrx
 openpyxl
-xlrd==2.0.1
+xlrd
 finance-datareader
