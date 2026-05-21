@@ -5,7 +5,6 @@ plotly
 requests
 beautifulsoup4
 lxml
-pykrx
+finance-datareader
 openpyxl
 xlrd
-finance-datareader
