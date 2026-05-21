@@ -470,12 +470,14 @@ def run_screener(params: dict, progress_bar, status_text,
         return pd.DataFrame()
 
     # ── 5. 종목별 OHLCV + 기술적 분석 ──
+    # ※ itertuples()는 한글 컬럼명을 속성으로 접근 불가 → iterrows() 사용
+    ticker_df = ticker_df.reset_index(drop=True)
     status_text.text(f"📈 기술적 분석 시작... (재무 통과 {total_filtered}개)")
 
-    for i, row in enumerate(ticker_df.itertuples(index=False)):
-        ticker = row.티커
-        name   = row.종목명
-        market = row.시장
+    for i, row in ticker_df.iterrows():
+        ticker = str(row["티커"])
+        name   = str(row["종목명"])
+        market = str(row["시장"])
 
         progress = (i + 1) / total_filtered
         progress_bar.progress(min(progress, 1.0))
@@ -514,10 +516,10 @@ def run_screener(params: dict, progress_bar, status_text,
                 skipped += 1
                 continue
 
-            # 재무 지표
-            per = safe_float(getattr(row, "PER", np.nan))
-            pbr = safe_float(getattr(row, "PBR", np.nan))
-            roe = safe_float(getattr(row, "ROE", np.nan))
+            # 재무 지표 (row는 Series이므로 .get() 사용)
+            per = safe_float(row.get("PER", np.nan))
+            pbr = safe_float(row.get("PBR", np.nan))
+            roe = safe_float(row.get("ROE", np.nan))
 
             # 점수 계산
             fin_score = calculate_financial_score(
