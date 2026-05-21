@@ -6,3 +6,5 @@ requests
 beautifulsoup4
 lxml
 pykrx
+openpyxl
+finance-datareader
