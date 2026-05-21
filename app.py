@@ -22,9 +22,9 @@ from io import BytesIO
 try:
     from pykrx import stock as krx_stock
     PYKRX_AVAILABLE = True
-except ImportError:
+except Exception:  # ← ImportError → Exception 으로 변경
     PYKRX_AVAILABLE = False
-    st.error("pykrx가 설치되지 않았습니다. `pip install pykrx`를 실행하세요.")
+    st.error("pykrx 로딩 실패. 관리자에게 문의하세요.")
 
 # FinanceDataReader - 대체 데이터 소스 (API Key 불필요)
 try:
